@@ -1,6 +1,8 @@
 #include <cerrno>
 #include <chrono>
+#include <cstdarg>
 #include <cstdio>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <sys/stat.h>
@@ -123,7 +125,8 @@ void dump_thread(bool bDumpLib)
 
     std::string sDumpDir = sOutDirectory + "/UEDump3r";
     std::string sDumpGameDir = sDumpDir + "/" + sGamePackage;
-    IOUtils::delete_directory(sDumpGameDir);
+    // Don't delete directory - keep previous logs for debugging
+    // IOUtils::delete_directory(sDumpGameDir);
 
     if (IOUtils::mkdir_recursive(sDumpGameDir, 0777) == -1)
     {
@@ -132,141 +135,274 @@ void dump_thread(bool bDumpLib)
         return;
     }
 
+    // ============ FILE LOGGING (no logcat needed) ============
+    // Write all logs to debug.log in the dump directory
+    std::string sDebugLogPath = sDumpGameDir + "/debug.log";
+    FILE *debugLog = fopen(sDebugLogPath.c_str(), "w");
+    if (debugLog)
+    {
+        fprintf(debugLog, "=== UEDump3r %s Debug Log ===\n", kPROGRAM_VER);
+        fprintf(debugLog, "Timestamp: %ld\n", time(nullptr));
+        fprintf(debugLog, "Game Package: %s\n", sGamePackage.c_str());
+        fprintf(debugLog, "Process ID: %d\n", gamePID);
+        fprintf(debugLog, "Output Directory: %s\n", sOutDirectory.c_str());
+        fprintf(debugLog, "Dump Library: %s\n", bDumpLib ? "true" : "false");
+        fprintf(debugLog, "==========================\n");
+        fflush(debugLog);
+    }
+
+    auto fileLog = [&](const char *fmt, ...)
+    {
+        if (!debugLog) return;
+        va_list args;
+        va_start(args, fmt);
+        vfprintf(debugLog, fmt, args);
+        va_end(args);
+        fprintf(debugLog, "\n");
+        fflush(debugLog);
+    };
+
+    fileLog("Starting memory initialization...");
+
     LOGE("Initializing memory...");
     if (!kMgr.initialize(gamePID, EK_MEM_OP_SYSCALL, false) && !kMgr.initialize(gamePID, EK_MEM_OP_IO, false))
     {
         LOGE("Failed to initialize KittyMemoryMgr.");
+        fileLog("ERROR: Failed to initialize KittyMemoryMgr (SYSCALL and IO both failed)");
+        if (debugLog) fclose(debugLog);
         return;
     }
+    fileLog("Memory initialized successfully");
 
-    UEDumper uEDumper{};
-
-    uEDumper.setDumpExeInfoNotify([](bool bFinished)
-    {
-        if (!bFinished)
-        {
-            LOGI("Dumping Executable Info...");
-        }
-    });
-
-    uEDumper.setDumpNamesInfoNotify([](bool bFinished)
-    {
-        if (!bFinished)
-        {
-            LOGI("Dumping Names Info...");
-        }
-    });
-
-    uEDumper.setDumpObjectsInfoNotify([](bool bFinished)
-    {
-        if (!bFinished)
-        {
-            LOGI("Dumping Objects Info...");
-        }
-    });
-
-    uEDumper.setDumpOffsetsInfoNotify([](bool bFinished)
-    {
-        if (!bFinished)
-        {
-            LOGI("Dumping Offsets Info...");
-        }
-    });
-
-    uEDumper.setObjectsProgressCallback([](const SimpleProgressBar &)
-    {
-        static bool once = false;
-        if (!once)
-        {
-            once = true;
-            LOGI("Gathering UObjects....");
-        };
-    });
-
-    uEDumper.setDumpProgressCallback([](const SimpleProgressBar &)
-    {
-        static bool once = false;
-        if (!once)
-        {
-            once = true;
-            LOGI("Dumping....");
-        };
-    });
-
-    bool dumpSuccess = false;
-    std::unordered_map<std::string, BufferFmt> dumpbuffersMap;
-    auto dmpStart = std::chrono::steady_clock::now();
+    // ============ FIND GAME PROFILE ============
+    // Use flexible matching: package name may have suffix (e.g. process name vs package name)
+    IGameProfile *matchedProfile = nullptr;
+    fileLog("Looking for game profile matching '%s' ...", sGamePackage.c_str());
 
     for (auto &it : UE_Games)
     {
         for (auto &pkg : it->GetAppIDs())
         {
-            if (sGamePackage != pkg)
-                continue;
-
-            if (bDumpLib)
+            // Exact match
+            if (sGamePackage == pkg)
             {
-                auto ue_elf = it->GetUnrealELF();
-                if (!ue_elf.isValid())
-                {
-                    LOGE("Couldn't find a valid UE ELF in target process maps.");
-                    return;
-                }
-
-                LOGI("Dumping unreal lib from memory...");
-                std::string libDumpPath = KittyUtils::String::fmt("%s/libUE_%p-%p.so", sDumpGameDir.c_str(), ue_elf.base(), ue_elf.end());
-                bool res = kMgr.dumpMemELF(ue_elf, libDumpPath);
-                LOGI("Dumping lib: %s.",  res ? "success" : "failed");
-                if (res)
-                {
-                    LOGI("%s", libDumpPath.c_str());
-                }
-                LOGI("==========================");
+                matchedProfile = it;
+                fileLog("  Exact match found: %s -> %s", pkg.c_str(), it->GetAppName().c_str());
+                break;
             }
-
-            LOGI("Initializing Dumper...");
-            if (uEDumper.Init(it))
+            // Prefix match (package name starts with profile's package)
+            if (sGamePackage.find(pkg) == 0 || pkg.find(sGamePackage) == 0)
             {
-                dumpSuccess = uEDumper.Dump(&dumpbuffersMap);
+                matchedProfile = it;
+                fileLog("  Prefix match found: %s ~ %s -> %s", pkg.c_str(), sGamePackage.c_str(), it->GetAppName().c_str());
+                break;
             }
+        }
+        if (matchedProfile) break;
+    }
 
-            goto done;
+    // Fallback: if no profile matched, use FortniteProfile (since we're injecting into Fortnite)
+    if (!matchedProfile)
+    {
+        fileLog("WARNING: No profile matched. Looking for FortniteProfile as fallback...");
+        for (auto &it : UE_Games)
+        {
+            if (it->GetAppName() == "Fortnite")
+            {
+                matchedProfile = it;
+                fileLog("  Using FortniteProfile as default fallback");
+                break;
+            }
         }
     }
 
-done:
-
-    if (!dumpSuccess && uEDumper.GetLastError().empty())
+    if (!matchedProfile)
     {
-        LOGE("Game is not supported. check AppID.");
+        fileLog("ERROR: No game profile found and no fallback available");
+        if (debugLog) fclose(debugLog);
         return;
     }
 
-    if (dumpbuffersMap.empty())
+    fileLog("Using profile: %s", matchedProfile->GetAppName().c_str());
+
+    // ============ DUMP LIBRARY (optional) ============
+    if (bDumpLib)
     {
-        LOGE("Dump Failed, Error <Buffers empty>");
-        LOGE("Dump Status <%s>", uEDumper.GetLastError().c_str());
+        auto ue_elf = matchedProfile->GetUnrealELF();
+        if (!ue_elf.isValid())
+        {
+            fileLog("WARNING: Couldn't find a valid UE ELF in target process maps.");
+        }
+        else
+        {
+            fileLog("Dumping unreal lib from memory (base=0x%lx, end=0x%lx)...",
+                    (unsigned long)ue_elf.base(), (unsigned long)ue_elf.end());
+            std::string libDumpPath = KittyUtils::String::fmt("%s/libUE_%p-%p.so", sDumpGameDir.c_str(),
+                                                               (void *)ue_elf.base(), (void *)ue_elf.end());
+            bool res = kMgr.dumpMemELF(ue_elf, libDumpPath);
+            fileLog("  Lib dump: %s", res ? "success" : "failed");
+            if (res)
+                fileLog("  Path: %s", libDumpPath.c_str());
+        }
+    }
+
+    // ============ FIND UE ELF ============
+    fileLog("Locating Unreal Engine library...");
+    auto ue_elf = matchedProfile->GetUnrealELF();
+    if (!ue_elf.isValid())
+    {
+        fileLog("ERROR: Couldn't find UE ELF. Tried names:");
+        for (auto &name : matchedProfile->GetUESoNames())
+            fileLog("  - %s", name.c_str());
+        // List all loaded libraries for debugging
+        fileLog("All loaded libraries in /proc/self/maps:");
+        FILE *maps = fopen("/proc/self/maps", "r");
+        if (maps)
+        {
+            char line[1024];
+            std::set<std::string> seen_libs;
+            while (fgets(line, sizeof(line), maps))
+            {
+                if (strstr(line, ".so"))
+                {
+                    // Extract library name
+                    char *p = strrchr(line, '/');
+                    if (p)
+                    {
+                        std::string libname(p + 1);
+                        libname = libname.substr(0, libname.find_first_of(" \n"));
+                        if (seen_libs.find(libname) == seen_libs.end())
+                        {
+                            seen_libs.insert(libname);
+                            fileLog("  %s", libname.c_str());
+                        }
+                    }
+                }
+            }
+            fclose(maps);
+        }
+        if (debugLog) fclose(debugLog);
+        return;
+    }
+    fileLog("UE ELF found: base=0x%lx, end=0x%lx, size=%lu KB",
+            (unsigned long)ue_elf.base(), (unsigned long)ue_elf.end(),
+            (unsigned long)(ue_elf.end() - ue_elf.base()) / 1024);
+
+    // ============ FIND GNames ============
+    fileLog("Finding GNames (FNamePool)...");
+    uintptr_t gnames = matchedProfile->GetNamesPtr();
+    fileLog("  GNames address: 0x%lx (offset from base: 0x%lx)",
+            (unsigned long)gnames, (unsigned long)(gnames - ue_elf.base()));
+    if (gnames == 0)
+    {
+        fileLog("ERROR: GNames not found via patterns. Dump failed.");
+        if (debugLog) fclose(debugLog);
         return;
     }
 
-    LOGI("Saving Files...");
+    // ============ FIND GUObjectArray ============
+    fileLog("Finding GUObjectArray...");
+    uintptr_t guobj = matchedProfile->GetGUObjectArrayPtr();
+    fileLog("  GUObjectArray address: 0x%lx (offset from base: 0x%lx)",
+            (unsigned long)guobj, (unsigned long)(guobj - ue_elf.base()));
+    if (guobj == 0)
+    {
+        fileLog("ERROR: GUObjectArray not found via patterns. Dump failed.");
+        if (debugLog) fclose(debugLog);
+        return;
+    }
 
+    // ============ INITIALIZE DUMPER ============
+    UEDumper uEDumper{};
+
+    uEDumper.setDumpExeInfoNotify([&fileLog](bool bFinished)
+    {
+        if (!bFinished) fileLog("Dumping Executable Info...");
+        else fileLog("Executable Info done");
+    });
+
+    uEDumper.setDumpNamesInfoNotify([&fileLog](bool bFinished)
+    {
+        if (!bFinished) fileLog("Dumping Names Info...");
+        else fileLog("Names Info done");
+    });
+
+    uEDumper.setDumpObjectsInfoNotify([&fileLog](bool bFinished)
+    {
+        if (!bFinished) fileLog("Dumping Objects Info...");
+        else fileLog("Objects Info done");
+    });
+
+    uEDumper.setDumpOffsetsInfoNotify([&fileLog](bool bFinished)
+    {
+        if (!bFinished) fileLog("Dumping Offsets Info...");
+        else fileLog("Offsets Info done");
+    });
+
+    uEDumper.setObjectsProgressCallback([&fileLog](const SimpleProgressBar &)
+    {
+        static bool once = false;
+        if (!once)
+        {
+            once = true;
+            fileLog("Gathering UObjects....");
+        };
+    });
+
+    uEDumper.setDumpProgressCallback([&fileLog](const SimpleProgressBar &)
+    {
+        static bool once = false;
+        if (!once)
+        {
+            once = true;
+            fileLog("Dumping....");
+        };
+    });
+
+    fileLog("Initializing UEDumper...");
+    bool dumpSuccess = false;
+    std::unordered_map<std::string, BufferFmt> dumpbuffersMap;
+
+    if (uEDumper.Init(matchedProfile))
+    {
+        fileLog("UEDumper initialized. Starting dump...");
+        dumpSuccess = uEDumper.Dump(&dumpbuffersMap);
+        fileLog("Dump result: %s", dumpSuccess ? "success" : "failed");
+    }
+    else
+    {
+        fileLog("ERROR: UEDumper.Init() failed: %s", uEDumper.GetLastError().c_str());
+    }
+
+    if (!dumpSuccess)
+    {
+        fileLog("ERROR: Dump failed. Last error: %s", uEDumper.GetLastError().c_str());
+        if (dumpbuffersMap.empty())
+        {
+            fileLog("ERROR: No buffers generated. Dump cannot continue.");
+            if (debugLog) fclose(debugLog);
+            return;
+        }
+        fileLog("WARNING: Dump reported failure but buffers exist - will save them");
+    }
+
+    fileLog("Saving %d files...", (int)dumpbuffersMap.size());
     for (const auto &it : dumpbuffersMap)
     {
         if (!it.first.empty())
         {
             std::string path = KittyUtils::String::fmt("%s/%s", sDumpGameDir.c_str(), it.first.c_str());
-            it.second.writeBufferToFile(path);
+            bool written = it.second.writeBufferToFile(path);
+            fileLog("  %s: %s (%d bytes)", it.first.c_str(), written ? "OK" : "FAILED", (int)it.second.size());
         }
     }
 
-    auto dmpEnd = std::chrono::steady_clock::now();
-    std::chrono::duration<float, std::milli> dmpDurationMS = (dmpEnd - dmpStart);
-
+    fileLog("==========================");
+    fileLog("Dump complete!");
+    fileLog("Output: %s", sDumpGameDir.c_str());
     if (!uEDumper.GetLastError().empty())
-    {
-        LOGI("Dump Status: %s", uEDumper.GetLastError().c_str());
-    }
-    LOGI("Dump Duration: %.2fms", dmpDurationMS.count());
-    LOGI("Dump Location: %s", sDumpGameDir.c_str());
+        fileLog("Last error: %s", uEDumper.GetLastError().c_str());
+    fileLog("==========================");
+
+    if (debugLog) fclose(debugLog);
 }
