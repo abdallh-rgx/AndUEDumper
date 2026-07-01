@@ -28,7 +28,7 @@ jobs:
       run: |
         cd AndUEDumper
         chmod +x build.sh
-        export ANDROID_NDK=${{ steps:setup-ndk.outputs.ndk-path }}
+        export ANDROID_NDK=${{ steps.setup-ndk.outputs.ndk-path }}
         ./build.sh
 
     - name: Upload Built Binary
