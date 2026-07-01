@@ -30,7 +30,12 @@ jobs:
     - name: Fix Source Code Errors
       run: |
         cd AndUEDumper
-        sed -i 's/if (pkg.first == packageObj)/if (pkg.first == (unsigned char*)packageObj.GetAddress())/g' src/Dumper.cpp || true 
+        # Fix packageObj comparison
+        sed -i 's/if (pkg.first == packageObj)/if (pkg.first == (unsigned char*)packageObj.GetAddress())/g' src/Dumper.cpp || true
+        # Disable C++20 features in nlohmann/json to avoid char8_t issues
+        # by forcing JSON_HAS_CPP_17 (prevents JSON_HAS_CPP_20 from being auto-defined)
+        sed -i '/set(CMAKE_CXX_STANDARD 20)/a add_compile_definitions(JSON_HAS_CPP_17)' CMakeLists.txt || true
+        # Also add -fno-char8_t for safety
         sed -i '/set(CMAKE_CXX_STANDARD 20)/a add_compile_options(-fno-char8_t)' CMakeLists.txt || true
 
     - name: Run Project Build Script
