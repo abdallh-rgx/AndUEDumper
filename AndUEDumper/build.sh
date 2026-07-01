@@ -6,7 +6,7 @@ set -e
 # ===============================
 NDK_PATH="${NDK_HOME}"
 BUILD_TYPE=Release
-ANDROID_API=21
+ANDROID_API=29
 ABIs=("arm64-v8a" "armeabi-v7a" "x86" "x86_64")
 
 CMAKE=cmake
