@@ -27,6 +27,12 @@ jobs:
     - name: Install Ninja
       run: sudo apt-get update && sudo apt-get install -y ninja-build
 
+    - name: Fix Compiler Ambiguity Error
+      run: |
+        cd AndUEDumper
+        sed -i 's/if (pkg.first == packageObj)/if (pkg.first.object == packageObj.object)/g' src/Dumper.cpp || true
+        sed -i 's/if (pkg.first == packageObj)/if (pkg.first == (void*)packageObj)/g' src/Dumper.cpp || true
+
     - name: Run Project Build Script
       run: |
         cd AndUEDumper
@@ -41,3 +47,4 @@ jobs:
         path: |
           AndUEDumper/cmake_build/
           AndUEDumper/out/
+ 
