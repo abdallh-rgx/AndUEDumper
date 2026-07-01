@@ -288,31 +288,9 @@ void dump_thread(bool bDumpLib)
             (unsigned long)ue_elf.base(), (unsigned long)ue_elf.end(),
             (unsigned long)(ue_elf.end() - ue_elf.base()) / 1024);
 
-    // ============ FIND GNames ============
-    fileLog("Finding GNames (FNamePool)...");
-    uintptr_t gnames = matchedProfile->GetNamesPtr();
-    fileLog("  GNames address: 0x%lx (offset from base: 0x%lx)",
-            (unsigned long)gnames, (unsigned long)(gnames - ue_elf.base()));
-    if (gnames == 0)
-    {
-        fileLog("ERROR: GNames not found via patterns. Dump failed.");
-        if (debugLog) fclose(debugLog);
-        return;
-    }
-
-    // ============ FIND GUObjectArray ============
-    fileLog("Finding GUObjectArray...");
-    uintptr_t guobj = matchedProfile->GetGUObjectArrayPtr();
-    fileLog("  GUObjectArray address: 0x%lx (offset from base: 0x%lx)",
-            (unsigned long)guobj, (unsigned long)(guobj - ue_elf.base()));
-    if (guobj == 0)
-    {
-        fileLog("ERROR: GUObjectArray not found via patterns. Dump failed.");
-        if (debugLog) fclose(debugLog);
-        return;
-    }
-
     // ============ INITIALIZE DUMPER ============
+    // Note: GetNamesPtr() and GetGUObjectArrayPtr() are called internally
+    // by UEDumper.Init() - we can't call them directly (they're protected)
     UEDumper uEDumper{};
 
     uEDumper.setDumpExeInfoNotify([&fileLog](bool bFinished)
