@@ -35,8 +35,8 @@ jobs:
         # Disable C++20 features in nlohmann/json to avoid char8_t issues
         # by forcing JSON_HAS_CPP_17 (prevents JSON_HAS_CPP_20 from being auto-defined)
         sed -i '/set(CMAKE_CXX_STANDARD 20)/a add_compile_definitions(JSON_HAS_CPP_17)' CMakeLists.txt || true
-        # Also add -fno-char8_t for safety
-        sed -i '/set(CMAKE_CXX_STANDARD 20)/a add_compile_options(-fno-char8_t)' CMakeLists.txt || true
+        # Ensure char8_t is enabled (needed by utfcpp)
+        sed -i '/set(CMAKE_CXX_STANDARD 20)/a add_compile_options(-fchar8_t)' CMakeLists.txt || true
 
     - name: Run Project Build Script
       run: |
