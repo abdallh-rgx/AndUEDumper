@@ -20,6 +20,7 @@
 #include "UE/UEGameProfiles/BlackClover.hpp"
 #include "UE/UEGameProfiles/Dislyte.hpp"
 #include "UE/UEGameProfiles/Farlight.hpp"
+#include "UE/UEGameProfiles/Fortnite.hpp"
 #include "UE/UEGameProfiles/MortalKombat.hpp"
 #include "UE/UEGameProfiles/PES.hpp"
 #include "UE/UEGameProfiles/Torchlight.hpp"
@@ -76,6 +77,7 @@ std::vector<IGameProfile *> UE_Games = {
     new LineageWProfile(),
     new RLSideswipeProfile(),
     new PUBGProfile(),
+    new FortniteProfile(),
 };
 
 #define kPROGRAM_VER "4.3.2"

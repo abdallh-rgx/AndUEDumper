@@ -1,4 +1,4 @@
-name: Build AndUEDumper
+name: Build AndUEDumper (Library Only - arm64)
 
 on:
   push:
@@ -38,17 +38,80 @@ jobs:
         # Ensure char8_t is enabled (needed by utfcpp)
         sed -i '/set(CMAKE_CXX_STANDARD 20)/a add_compile_options(-fchar8_t)' CMakeLists.txt || true
 
-    - name: Run Project Build Script
+    - name: Build Library (arm64-v8a only)
       run: |
         cd AndUEDumper
-        chmod +x build.sh
         export NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}
-        echo 1 | ./build.sh
+        ABI=arm64-v8a
+        echo "=================================="
+        echo "CMake build - ABI $ABI (library only)"
+        echo "=================================="
 
-    - name: Upload Built Binary
+        cmake -S . -B "cmake_build/${ABI}" \
+          -G "Ninja" \
+          -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_TOOLCHAIN_FILE="${NDK_HOME}/build/cmake/android.toolchain.cmake" \
+          -DANDROID_ABI=$ABI \
+          -DANDROID_PLATFORM=android-29 \
+          -DANDROID_STL=c++_static \
+          -DBUILD_SHARED=ON
+
+        JOBS=$(($(nproc) / 2))
+        [ $JOBS -lt 1 ] && JOBS=1
+        cmake --build "cmake_build/${ABI}" -- -j${JOBS}
+
+        echo ""
+        echo "=== Build output ==="
+        ls -la "cmake_build/${ABI}/"*.so 2>&1 || echo "No .so found, listing dir:"
+        ls -la "cmake_build/${ABI}/" 2>&1 | head -20
+
+    - name: Strip library
+      run: |
+        cd AndUEDumper
+        STRIP=${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip
+        for f in cmake_build/arm64-v8a/*.so; do
+          if [ -f "$f" ]; then
+            echo "Stripping $f ..."
+            cp "$f" "$f.unstripped"
+            $STRIP --strip-all "$f"
+            echo "Original size: $(du -h "$f.unstripped" | cut -f1)"
+            echo "Stripped size:  $(du -h "$f" | cut -f1)"
+          fi
+        done
+
+    - name: Prepare release package
+      run: |
+        cd AndUEDumper
+        mkdir -p release
+        # Copy stripped .so
+        for f in cmake_build/arm64-v8a/*.so; do
+          if [ -f "$f" ]; then
+            cp "$f" release/
+          fi
+        done
+        ls -la release/
+
+    - name: Upload Library Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: AndUEDumper-Binaries
+        name: AndUEDumper-arm64-lib
         path: |
-          AndUEDumper/cmake_build/
-          AndUEDumper/out/
+          AndUEDumper/release/
+          AndUEDumper/cmake_build/arm64-v8a/*.so
+        retention-days: 90
+        if-no-files-found: error
+
+    - name: Build summary
+      run: |
+        echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "- **Build Type**: Shared Library (for APK injection)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Architecture**: arm64-v8a only" >> $GITHUB_STEP_SUMMARY
+        echo "- **NDK version**: r25c" >> $GITHUB_STEP_SUMMARY
+        echo "- **No root required**: Reads memory from same process (getpid)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Output:" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        ls -la AndUEDumper/release/ >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
